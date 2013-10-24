@@ -7,38 +7,24 @@
 
 #if defined(NDEBUG) && !defined(_DEBUG) && !defined(DEBUG)
 #	define DumpInstruction( _Message, ... )	do { } while ( 0 )
+#	define DumpDisassembly( _Message, ... ) do { } while ( 0 )
 #else
 #	define DumpInstruction( _Message, ... )	do { printf( _Message "\n", __VA_ARGS__ ); } while ( 0 )
+#	define DumpDisassembly( _Message, ... )	do { printf( _Message "\n", __VA_ARGS__ ); } while ( 0 )
 #endif
 
 typedef Uint16 address;
 typedef Uint16 instruction;
 
-struct Chip8
+struct Cpu8080
 {
-	Chip8( )
+	Cpu8080( )
 	{
-		Memory[  0 ] = 0xF0; Memory[  1 ] = 0x90; Memory[  2 ] = 0x90; Memory[  3 ] = 0x90; Memory[  4 ] = 0xF0;	// 0
-		Memory[  5 ] = 0x20; Memory[  6 ] = 0x60; Memory[  7 ] = 0x20; Memory[  8 ] = 0x20; Memory[  9 ] = 0x70;	// 1
-		Memory[ 10 ] = 0xF0; Memory[ 11 ] = 0x10; Memory[ 12 ] = 0xF0; Memory[ 13 ] = 0x80; Memory[ 14 ] = 0xF0;	// 2
-		Memory[ 15 ] = 0xF0; Memory[ 16 ] = 0x10; Memory[ 17 ] = 0xF0; Memory[ 18 ] = 0x10; Memory[ 19 ] = 0xF0;	// 3
-		Memory[ 20 ] = 0x90; Memory[ 21 ] = 0x90; Memory[ 22 ] = 0xF0; Memory[ 23 ] = 0x10; Memory[ 24 ] = 0x10;	// 4
-		Memory[ 25 ] = 0xF0; Memory[ 26 ] = 0x80; Memory[ 27 ] = 0xF0; Memory[ 28 ] = 0x10; Memory[ 29 ] = 0xF0;	// 5
-		Memory[ 30 ] = 0xF0; Memory[ 31 ] = 0x80; Memory[ 32 ] = 0xF0; Memory[ 33 ] = 0x90; Memory[ 34 ] = 0xF0;	// 6
-		Memory[ 35 ] = 0xF0; Memory[ 36 ] = 0x10; Memory[ 37 ] = 0x20; Memory[ 38 ] = 0x40; Memory[ 39 ] = 0x40;	// 7
-		Memory[ 40 ] = 0xF0; Memory[ 41 ] = 0x90; Memory[ 42 ] = 0xF0; Memory[ 43 ] = 0x90; Memory[ 44 ] = 0xF0;	// 8
-		Memory[ 45 ] = 0xF0; Memory[ 46 ] = 0x90; Memory[ 47 ] = 0xF0; Memory[ 48 ] = 0x10; Memory[ 49 ] = 0xF0;	// 9
-		Memory[ 50 ] = 0xF0; Memory[ 51 ] = 0x90; Memory[ 52 ] = 0xF0; Memory[ 53 ] = 0x90; Memory[ 54 ] = 0x90;	// a
-		Memory[ 55 ] = 0xE0; Memory[ 56 ] = 0x90; Memory[ 57 ] = 0xE0; Memory[ 58 ] = 0x90; Memory[ 59 ] = 0xE0;	// b
-		Memory[ 60 ] = 0xF0; Memory[ 61 ] = 0x80; Memory[ 62 ] = 0x80; Memory[ 63 ] = 0x80; Memory[ 64 ] = 0xF0;	// c
-		Memory[ 65 ] = 0xE0; Memory[ 66 ] = 0x90; Memory[ 67 ] = 0x90; Memory[ 68 ] = 0x90; Memory[ 69 ] = 0xE0;	// d
-		Memory[ 70 ] = 0xF0; Memory[ 71 ] = 0x80; Memory[ 72 ] = 0xF0; Memory[ 73 ] = 0x80; Memory[ 74 ] = 0xF0;	// e
-		Memory[ 75 ] = 0xF0; Memory[ 76 ] = 0x80; Memory[ 77 ] = 0xF0; Memory[ 78 ] = 0x80; Memory[ 79 ] = 0x80;	// f
 	}
 
-	struct CommandProcessingUnit
+	struct Cpu
 	{
-		CommandProcessingUnit( ) : StackLevel( 0 )
+		Cpu( ) : StackLevel( 0 )
 		{ 
 			for ( size_t ix = 0; ix < 16; ++ix )
 			{
@@ -50,16 +36,54 @@ struct Chip8
 		{
 			Registers( )
 			{
-				for ( size_t ix = 0; ix < 16; ++ix )
+				for ( size_t ix = 0; ix < Gpr::Num; ++ix )
 				{
-					v[ ix ] = 0;
+					gpr[ ix ] = 0;
 				}
-				i     = 0;
-				delay = 0;
-				sound = 0;
-				pc    = 0x200;
+				flags = 0;
+				sp = 0;
+				accumulator = 0;
+				i           = 0;
+				delay       = 0;
+				sound       = 0;
+				pc          = 0x0;
 			}
-			unsigned __int8  v[ 16 ];
+			// B, C, D, E, H, L (accessible as pairs AB, DE, HL).
+			struct Gpr
+			{
+				enum T
+				{
+					B = 0,
+					C,
+					D,
+					E,
+					H,
+					L,
+					Num
+				};
+			};
+			struct GprPair
+			{
+				enum T
+				{
+					BC,
+					DE,
+					HL,
+					Num
+				};
+			};
+			union
+			{
+				unsigned __int8  gpr[ Gpr::Num ];
+				unsigned __int16 gprPair[ GprPair::Num ];
+			};
+			union
+			{
+				unsigned __int8  flags;
+			};
+			unsigned __int16 sp;
+			unsigned __int8  accumulator;
+
 			unsigned __int16 i;
 			unsigned __int8  delay;
 			unsigned __int8  sound;
@@ -67,11 +91,11 @@ struct Chip8
 		};
 
 		Registers			Regs;
-		unsigned __int16	Stack[ 16 ];
+		unsigned __int16	Stack[ 64 ];
 		size_t				StackLevel;
 	};
 
-	CommandProcessingUnit Cpu;
+	Cpu Cpu;
 
 	Uint8 Memory[ 16 * 1024 ];
 };
@@ -370,29 +394,85 @@ private:
 	bool m_SoundOn;
 };
 
-
-int main( int numArgs, char ** args )
+bool ReadFileIntoMemory( const char * file, Uint8 * memory, size_t expectedSize )
 {
-	Chip8 chip8;
-	Api api;
-	api.Initialise( );
-
 	FILE * fh = NULL;
-	if ( fopen_s( &fh, "Pong.ch8", "rb" ) == 0 )
+	if ( fopen_s( &fh, file, "rb" ) == 0 )
 	{
 		fseek( fh, 0L, SEEK_END );
 		size_t fileSize = ftell( fh );
 		fseek( fh, 0L, SEEK_SET );
-		assert( sizeof( chip8.Memory ) - 0x200 >= fileSize );
-		int numRead = fread( &chip8.Memory[ 0x200 ], fileSize, 1, fh );
-		assert( numRead == 1 );
+		if( expectedSize != 2048 )
+		{
+			return false;
+		}
+		fread( memory, fileSize, 1, fh );
 		fclose( fh );
+		return true;
 	}
 	else
 	{
-		assert( 0 );
-		return -1;
+		return false;
 	}
+}
+
+#define IncrementPc( )						chip8.Cpu.Regs.pc += 1
+#define DoubleIncrementPc( )				chip8.Cpu.Regs.pc += 2
+
+#define GetHlMemory( )						chip8.Memory[ chip8.Cpu.Regs.gprPair[ Cpu8080::Cpu::Registers::GprPair::HL ] ]
+#define SetHlMemory( _Val )					GetHlMemory( ) = _Val
+
+#define GetRegisterBc( )					chip8.Cpu.Regs.gprPair[ Cpu8080::Cpu::Registers::GprPair::BC ]
+#define SetRegisterBc( _Val )				GetRegisterBc( ) = _Val
+#define GetBcMemory8( )						chip8.Memory[ GetRegisterBc( ) ]
+#define GetBcMemory16( )					( Uint16 &)GetBcMemory8( )
+#define SetBcMemory( _Val )					GetBcMemory16( ) = _Val
+
+#define GetRegisterDe( )					chip8.Cpu.Regs.gprPair[ Cpu8080::Cpu::Registers::GprPair::DE ]
+#define SetRegisterDe( _Val )				GetRegisterDe( ) = _Val
+#define GetDeMemory8( )						chip8.Memory[ GetRegisterDe( ) ]
+#define GetDeMemory16( )					( Uint16 &)GetDeMemory8( )
+#define SetDeMemory( _Val )					GetDeMemory16( ) = _Val
+
+#define GetRegisterHl( )					chip8.Cpu.Regs.gprPair[ Cpu8080::Cpu::Registers::GprPair::HL ]
+#define SetRegisterHl( _Val )				GetRegisterHl( ) = _Val
+
+#define GetAccumulator( )					chip8.Cpu.Regs.accumulator
+#define SetAccumulator( _Val )				GetAccumulator( ) = _Val
+
+#define GetMemory8AtAddress( _Addr )		chip8.Memory[ _Addr ]
+#define SetMemory8AtAddress( _Addr, _Val )	GetMemory8AtAddress( _Addr ) = _Val
+
+#define GetMemory16AtAddress( _Addr )		( ( Uint16 &)chip8.Memory[ _Addr ] )
+#define SetMemory16AtAddress( _Addr, _Val )	GetMemory16AtAddress( _Addr ) = _Val
+
+#define GetRegisterSp( )					chip8.Cpu.Regs.sp
+#define SetRegisterSp( _Val )				GetRegisterSp( ) = _Val
+#define DecrementSp( )						GetRegisterSp( ) -= 1
+#define DoubleDecrementSp( )				GetRegisterSp( ) -= 2
+#define IncrementSp( )						GetRegisterSp( ) += 1
+#define DoubleIncrementSp( )				GetRegisterSp( ) += 2
+#define PushAndDecrementStack8( _Val )		SetMemory8AtAddress( GetRegisterSp( ) - 1, _Val ); DecrementSp( )
+#define PushAndDecrementStack16( _Val )		SetMemory16AtAddress( GetRegisterSp( ) - 2, _Val ); DoubleDecrementSp( )
+
+#define PopStack8( )						GetMemory8AtAddress( GetRegisterSp( ) )
+#define PopStack16( )						GetMemory16AtAddress( GetRegisterSp( ) )
+
+#define GetFlags( )							chip8.Cpu.Regs.flags
+#define SetFlags( _Val )					GetFlags( ) = _Val
+
+int main( int numArgs, char ** args )
+{
+	Cpu8080 chip8;
+	Api api;
+	api.Initialise( );
+
+	bool okay = true;
+	okay &= ReadFileIntoMemory( "invaders.h", &chip8.Memory[ 0x0000 ], 2048 );
+	okay &= ReadFileIntoMemory( "invaders.g", &chip8.Memory[ 0x0800 ], 2048 );
+	okay &= ReadFileIntoMemory( "invaders.f", &chip8.Memory[ 0x1000 ], 2048 );
+	okay &= ReadFileIntoMemory( "invaders.e", &chip8.Memory[ 0x1800 ], 2048 );
+	assert( okay );
 
 	// Previous instruction (for debugging).
 	address lastInstruction = 0x0000;
@@ -441,326 +521,425 @@ int main( int numArgs, char ** args )
 		// Play bleeping sound.
 		api.SetSound( chip8.Cpu.Regs.sound > 0 );
 
-		Uint16 instruction = ( ( ( address )chip8.Memory[ chip8.Cpu.Regs.pc ] ) << 8 ) | ( address )chip8.Memory[ chip8.Cpu.Regs.pc + 1 ];
+		Uint8  instruction = chip8.Memory[ chip8.Cpu.Regs.pc ];
+		Uint8  s = instruction & 7;
+		Uint8  d = ( instruction >> 3 ) & 7;
+		Uint8  immediate[ 2 ] = { chip8.Memory[ chip8.Cpu.Regs.pc + 1 ], chip8.Memory[ chip8.Cpu.Regs.pc + 2 ] };
+		Uint16 immediate16 = ( immediate[ 1 ] << 8 ) | immediate[ 0 ];
 
 		switch ( instruction )
 		{
-		case 0x00e0:
-			DumpInstruction( "Screen clear" );
-			api.ClearScreen( );
-			break;
-
-		case 0x00ee:
-			DumpInstruction( "Return from sub routine" );
-
-			// Pop current PC from stack.
-			assert( chip8.Cpu.StackLevel );
-			chip8.Cpu.Regs.pc = chip8.Cpu.Stack[ --chip8.Cpu.StackLevel ];
-
-			break;
-
-		default:
-			switch ( instruction & 0xf000 )
-			{
 			case 0x0000:
+			{
+				DumpInstruction( "NOP" );
+			}
+			break;
+
+			// ------------------------------------------------------------
+			// Move, Load & Store.
+			// ------------------------------------------------------------
+			// TODO:
+			// MOV r1, r2
+			// MOV  M, r
+			// MOV  r, M
+			// MVI  r, #
+
+			case 0x36:
+			{
+				// Move immediate memory.
+				// Cycles : 10
+				DumpDisassembly( "MVI M" );
+				DumpInstruction( "(HL) = 0x%x", immediate[ 0 ] );
+				SetHlMemory( immediate[ 0 ] );
+
+				// Next instruction is immediate we just used.
+				IncrementPc( );
+			}
+			break;
+
+			case 0x1:
+			{
+				// Load immediate into register pair BC
+				// Cycles : 10
+				DumpDisassembly( "LXI B" );
+				DumpInstruction( "BC = 0x%x", immediate16 );
+				SetRegisterBc( immediate16 );
+
+				// Next two instruction are immediates we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x11:
+			{
+				// Load immediate into register pair DE
+				// Cycles : 10
+				DumpDisassembly( "LXI D" );
+				DumpInstruction( "DE = 0x%x", immediate16 );
+				SetRegisterDe( immediate16 );
+
+				// Next two instruction are immediates we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x21:
+			{
+				// Load immediate into register pair HL
+				// Cycles : 10
+				DumpDisassembly( "LXI H" );
+				DumpInstruction( "HL = 0x%x", immediate16 );
+				SetRegisterHl( immediate16 );
+
+				// Next two instruction are immediates we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x2:
+			{
+				// Store accumulator into (BC).
+				// Cycles : 7
+				DumpDisassembly( "STAX B" );
+				DumpInstruction( "(BC) = accumulator" );
+				SetBcMemory( GetAccumulator( ) );
+			}
+			break;
+
+			case 0x12:
+			{
+				// Store accumulator into (DE).
+				// Cycles : 7
+				DumpDisassembly( "STAX D" );
+				DumpInstruction( "(DE) = accumulator" );
+				SetDeMemory( GetAccumulator( ) );
+			}
+			break;
+
+			case 0xa:
+			{
+				// Load accumulator from (BC).
+				// Cycles : 7
+				DumpDisassembly( "LDAX B" );
+				DumpInstruction( "accumulator = (BC)" );
+				SetAccumulator( GetBcMemory8( ) );
+			}
+			break;
+
+			case 0x1a:
+			{
+				// Load accumulator from DE.
+				// Cycles : 7
+				DumpDisassembly( "LDAX D" );
+				DumpInstruction( "accumulator = (DE)" );
+				SetAccumulator( GetDeMemory8( ) );
+			}
+			break;
+
+			case 0x32:
+			{
+				// Store accumulator to address.
+				// Cycles : 13
+				DumpDisassembly( "STA" );
+				DumpInstruction( "(immediate16) = accumulator" );
+				SetMemory16AtAddress( immediate16, GetAccumulator( ) );
+
+				// Next two instruction are address we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x3a:
+			{
+				// Load accumulator from address.
+				// Cycles : 13
+				DumpDisassembly( "LDA" );
+				DumpInstruction( "accumulator = (immediate16)" );
+				SetAccumulator( GetMemory8AtAddress( immediate16 ) );
+
+				// Next two instruction are address we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x22:
+			{
+				// Store HL direct.
+				// Cycles : 16
+				DumpDisassembly( "SHLD" );
+				DumpInstruction( "(immediate16) = HL" );
+				SetMemory16AtAddress( immediate16, GetRegisterHl( ) );
+
+				// Next two instruction are address we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0x2a:
+			{
+				// Load HL direct.
+				// Cycles : 16
+				DumpDisassembly( "LHLD" );
+				DumpInstruction( "HL = (immediate16)" );
+				SetRegisterHl( GetMemory16AtAddress( immediate16 ) );
+
+				// Next two instruction are address we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+			case 0xeb:
+			{
+				// Exchange DE and HL.
+				// Cycles : 4
+				DumpDisassembly( "XCHG" );
+				DumpInstruction( "DE <=> HL" );
+				Uint16 de = GetRegisterDe( );
+				Uint16 hl = GetRegisterHl( );
+				SetRegisterDe( hl );
+				SetRegisterHl( de );
+			}
+			break;
+
+			// ------------------------------------------------------------
+			// Stack operations.
+			// ------------------------------------------------------------
+			case 0xc5:
+			{
+				// Push BC onto stack.
+				// Cycles : 11
+				DumpDisassembly( "PUSH B" );
+				DumpInstruction( "(SP-2) = BC ; SP -= 2" );
+				PushAndDecrementStack16( GetRegisterBc( ) );
+			}
+			break;
+
+			case 0xd5:
+			{
+				// Push DE onto stack.
+				// Cycles : 11
+				DumpDisassembly( "PUSH D" );
+				DumpInstruction( "(SP-2) = DE ; SP -= 2" );
+				PushAndDecrementStack16( GetRegisterDe( ) );
+			}
+			break;
+
+			case 0xe5:
+			{
+				// Push HL onto stack.
+				// Cycles : 11
+				DumpDisassembly( "PUSH H" );
+				DumpInstruction( "(SP-2) = HL ; SP -= 2" );
+				PushAndDecrementStack16( GetRegisterHl( ) );
+			}
+			break;
+
+			case 0xf5:
+			{
+				// Push A and flags onto stack.
+				// Cycles : 11
+				DumpDisassembly( "PUSH PSW" );
+				DumpInstruction( "(SP-1) = A ; (SP-2) = FLAGS ; SP -= 2" );
+				PushAndDecrementStack8( GetAccumulator( ) );
+				PushAndDecrementStack8( GetFlags( ) );
+			}
+			break;
+
+			case 0xc1:
+			{
+				// Pop BC from stack.
+				// Cycles : 10
+				DumpDisassembly( "POP B" );
+				DumpInstruction( "BC = (SP) ; SP += 2" );
+				SetRegisterBc( PopStack16( ) );
+				DoubleIncrementSp( );
+			}
+			break;
+
+			case 0xd1:
+			{
+				// Pop DE from stack.
+				// Cycles : 10
+				DumpDisassembly( "POP D" );
+				DumpInstruction( "DE = (SP) ; SP += 2" );
+				SetRegisterDe( PopStack16( ) );
+				DoubleIncrementSp( );
+			}
+			break;
+
+			case 0xe1:
+			{
+				// Pop HL from stack.
+				// Cycles : 10
+				DumpDisassembly( "POP H" );
+				DumpInstruction( "HL = (SP) ; SP += 2" );
+				SetRegisterHl( PopStack16( ) );
+				DoubleIncrementSp( );
+			}
+			break;
+
+			case 0xf1:
+			{
+				// Pop A and flags from stack.
+				// Cycles : 10
+				DumpDisassembly( "POP PSW" );
+				DumpInstruction( "FLAGS = (SP) ; A = (SP+1) ; SP += 2" );
+				SetFlags( PopStack8( ) );
+				DecrementSp( );
+				SetAccumulator( PopStack8( ) );
+				DecrementSp( );
+			}
+			break;
+
+			case 0xe3:
+			{
+				// (SP) <=> HL.
+				// Cycles : 18
+				DumpDisassembly( "XTHL" );
+				DumpInstruction( "(SP) <=> HL" );
+				Uint16 hl = GetRegisterHl( );
+				Uint16 derefSp = GetMemory16AtAddress( GetRegisterSp( ) );
+				SetRegisterHl( derefSp );
+				SetMemory16AtAddress( GetRegisterSp( ), hl );
+			}
+			break;
+
+			case 0xf9:
+			{
+				// SP = HL.
+				// Cycles : 5
+				DumpDisassembly( "SPHL" );
+				DumpInstruction( "SP = HL" );
+				SetRegisterSp( GetRegisterHl( ) );
+			}
+			break;
+
+			case 0x31:
+			{
+				// Load immediate into SP
+				// Cycles : 10
+				DumpDisassembly( "LXI SP" );
+				DumpInstruction( "SP = 0x%x", immediate16 );
+				SetRegisterSp( immediate16 );
+
+				// Next two instruction are immediates we just used.
+				DoubleIncrementPc( );
+			}
+			break;
+
+
+
+
+			case 0xc3:
+			{
+				// Jump to address.
+				DumpDisassembly( "JMP 0x%x", immediate16 );
+				DumpInstruction( "pc = 0x%x", immediate16 );
+
+				// -1 to take account of the increment at the end of the loop.
+				chip8.Cpu.Regs.pc = immediate16 - 1;
+			}
+			break;
+		
+			// Switch left two bits.
+			switch ( instruction & 0xc0 )
+			{
+				// 01.
+				case 0x40:
 				{
-					address addr = instruction & 0x0fff;
-					DumpInstruction( "Calls RCA 1802 program at address 0x%x", addr );
-
-					// http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#0nnn
-					// This instruction is only used on the old computers on which Chip-8 was originally implemented. It is ignored by modern interpreters.
-
-				}
-				break;
-			case 0x1000:
-				{
-					address addr = instruction & 0x0fff;
-					DumpInstruction( "Jump to 0x%x", addr );
-
-					// Set PC, we do -2 as PC is incremented by two after each instruction.
-					chip8.Cpu.Regs.pc = addr - 2;
-				}
-				break;
-			case 0x2000:
-				{
-					address addr = instruction & 0x0fff;
-					DumpInstruction( "Call sub routine to 0x%x", addr );
-
-					// Store current PC on stack.
-					chip8.Cpu.Stack[ chip8.Cpu.StackLevel++ ] = chip8.Cpu.Regs.pc;
-					assert( chip8.Cpu.StackLevel < 16 );
-
-					// Set PC, we do -2 as PC is incremented by two after each instruction.
-					chip8.Cpu.Regs.pc = addr - 2;
-				}
-				break;
-			case 0x3000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-					int val = instruction & 0x00ff;
-					DumpInstruction( "Skips next instruction if v%02d equals %d", reg, val );
-
-					if ( chip8.Cpu.Regs.v[ reg ] == val )
+					if ( s < 6 && d < 6 )
 					{
-						chip8.Cpu.Regs.pc += 2;
+						// Move register to register.
+						DumpDisassembly( "MOV r%d, r%d", d, s );
+						DumpInstruction( "gpr[ %d ] = gpr[ %d ]", d, s );
+					}
+					else if ( s < 6 && d == 6 )
+					{
+						// Move register to memory.
+						DumpDisassembly( "MOV M,  r%d", d, s );
+						DumpInstruction( "*gpr[ 4 - 5 ] = gpr[ %d ]", s );
+					}
+					else if ( s == 6 && d < 6 )
+					{
+						// Move memory to register.
+						DumpDisassembly( "MOV r%d, M", d, s );
+						DumpInstruction( "gpr[ %d ] = *gpr[ 4 - 5 ]", d );
+					}
+					else if ( s == 6 && d == 6 )
+					{
+						// Halt.
+						DumpDisassembly( "HLT" );
+						DumpInstruction( "halt" );
+						_exit( 0 );
 					}
 				}
 				break;
-			case 0x4000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-					int val = instruction & 0x00ff;
-					DumpInstruction( "Skips next instruction if v%02d does not equals %d", reg, val );
 
-					if ( chip8.Cpu.Regs.v[ reg ] != val )
+				// 00.
+				case 0:
+				{
+					if ( s == 6 && d < 6 )
 					{
-						chip8.Cpu.Regs.pc += 2;
+						// Move immediate register.
+						DumpDisassembly( "MVI r%d", d );
+						DumpInstruction( "gpr[ %d ] = %d", d, immediate[ 0 ] );
+					}
+					else if ( s == 6 && d == 6 )
+					{
+						// Move immediate memory.
+						DumpDisassembly( "MVI M" );
+						DumpInstruction( "*gpr[ 4 - 5 ] = %d", immediate[ 0 ] );
+					}
+					else if ( s == 1 && d == 0 )
+					{
+						// Load immediate register pair BC
+						DumpDisassembly( "LXI B" );
+						DumpInstruction( "gpr[ 0 ] = %d, gpr[ 1 ] = %d", immediate[ 1 ], immediate[ 0 ] );
+					}
+					else if ( s == 1 && d == 2 )
+					{
+						// Load immediate register pair DE
+						DumpDisassembly( "LXI D" );
+						DumpInstruction( "gpr[ 2 ] = %d, gpr[ 3 ] = %d", immediate[ 1 ], immediate[ 0 ] );
+					}
+					else if ( s == 1 && d == 4 )
+					{
+						// Load immediate register pair HL
+						DumpDisassembly( "LXI H" );
+						DumpInstruction( "gpr[ 4 ] = %d, gpr[ 5 ] = %d", immediate[ 1 ], immediate[ 0 ] );
+					}
+					else if ( s == 2 && d == 0 )
+					{
+						// Store A indirect.
+						DumpDisassembly( "STAX B" );
+						DumpInstruction( "*gpr[ 0 - 1 ] = accumlator" );
+					}
+					else if ( s == 2 && d == 2 )
+					{
+						// Store A indirect.
+						DumpDisassembly( "STAX D" );
+						DumpInstruction( "*gpr[ 2 - 3 ] = accumlator" );
+					}
+					else if ( s == 2 && d == 1 )
+					{
+						// Store A indirect.
+						DumpDisassembly( "LDAX B" );
+						DumpInstruction( "accumlator = *gpr[ 0 - 1 ]" );
+					}
+					else if ( s == 2 && d == 3 )
+					{
+						// Store A indirect.
+						DumpDisassembly( "LDAX D" );
+						DumpInstruction( "accumlator = *gpr[ 2 - 3 ]" );
+					}
+					else if ( s == 2 && d == 6 )
+					{
+						// Store A indirect.
+						DumpDisassembly( "STA" );
+						DumpInstruction( "*gpr[ 4 - 5 ] = accumlator" );
 					}
 				}
 				break;
-			case 0x5000:
-				{
-					int reg1 = ( instruction & 0x0f00 ) >> 8;
-					int reg2 = ( instruction & 0x00f0 ) >> 4;
-					DumpInstruction( "Skips next instruction if v%02d equals v%02d", reg1, reg2 );
-
-					if ( chip8.Cpu.Regs.v[ reg1 ] == chip8.Cpu.Regs.v[ reg2 ] )
-					{
-						chip8.Cpu.Regs.pc += 2;
-					}
-				}
-				break;
-			case 0x6000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-					int val = instruction & 0x00ff;
-					DumpInstruction( "Set v%02d to %d", reg, val );
-
-					chip8.Cpu.Regs.v[ reg ] = val;
-				}
-				break;
-			case 0x7000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-					int val = instruction & 0x00ff;
-					DumpInstruction( "Add %d to v%02d", val, reg );
-
-					chip8.Cpu.Regs.v[ reg ] += val;
-				}
-				break;
-			case 0x8000:
-				{
-					int reg1 = ( instruction & 0x0f00 ) >> 8;
-					int reg2 = ( instruction & 0x00f0 ) >> 4;
-
-					switch ( instruction & 0x000f )
-					{
-					case 0:
-						DumpInstruction( "Sets v%02d to v%02d", reg1, reg2 );
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg2 ];
-						break;
-					case 1:
-						DumpInstruction( "Sets v%02d to v%02d OR v%02d", reg1, reg1, reg2 );
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg1 ] | chip8.Cpu.Regs.v[ reg2 ];
-						break;
-					case 2:
-						DumpInstruction( "Sets v%02d to v%02d AND v%02d", reg1, reg1, reg2 );
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg1 ] & chip8.Cpu.Regs.v[ reg2 ];
-						break;
-					case 3:
-						DumpInstruction( "Sets v%02d to v%02d XOR v%02d", reg1, reg1, reg2 );
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg1 ] ^ chip8.Cpu.Regs.v[ reg2 ];
-						break;
-					case 4:
-						{
-							DumpInstruction( "Sets v%02d to v%02d + v%02d [VF = 1 when there is a carry, 0 when not]", reg1, reg1, reg2 );
-							unsigned __int16 result = chip8.Cpu.Regs.v[ reg1 ] + chip8.Cpu.Regs.v[ reg2 ];
-							chip8.Cpu.Regs.v[ reg1 ] = result & 0xff;
-							chip8.Cpu.Regs.v[ 0xf ] = ( result > 0xff ) ? 1 : 0;
-						}
-						break;
-					case 5:
-						DumpInstruction( "Sets v%02d to v%02d - v%02d [VF = 0 when there is a borrow, 1 when not]", reg1, reg1, reg2 );
-						chip8.Cpu.Regs.v[ 0xf ] = ( chip8.Cpu.Regs.v[ reg1 ] >= chip8.Cpu.Regs.v[ reg2 ] ) ? 1 : 0;
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg1 ] - chip8.Cpu.Regs.v[ reg2 ];
-						break;
-					case 6:
-						DumpInstruction( "Shift v%02d right by one [VF is set to the least significant bit of v%02d before the shift]", reg1, reg1 );
-						chip8.Cpu.Regs.v[ 0xf ] = chip8.Cpu.Regs.v[ reg1 ] & 0x1;
-						chip8.Cpu.Regs.v[ reg1 ] >>= 1;
-						break;
-					case 7:
-						DumpInstruction( "Sets v%02d to v%02d - v%02d [VF = 0 when there is a borrow, 1 when not]", reg1, reg2, reg1 );
-						chip8.Cpu.Regs.v[ 0xf ] = ( chip8.Cpu.Regs.v[ reg2 ] >= chip8.Cpu.Regs.v[ reg1 ] ) ? 1 : 0;
-						chip8.Cpu.Regs.v[ reg1 ] = chip8.Cpu.Regs.v[ reg2 ] - chip8.Cpu.Regs.v[ reg1 ];
-						break;
-					case 0xe:
-						DumpInstruction( "Shift v%02d left by one [VF is set to the most significant bit of v%02d before the shift]", reg1, reg1 );
-						chip8.Cpu.Regs.v[ 0xf ] = ( chip8.Cpu.Regs.v[ reg1 ] & 0x80 ) ? 1 : 0;
-						chip8.Cpu.Regs.v[ reg1 ] <<= 1;
-						break;
-
-					default:
-						assert( 0 );
-					}
-				}
-				break;
-			case 0x9000:
-				{
-					int reg1 = ( instruction & 0x0f00 ) >> 8;
-					int reg2 = ( instruction & 0x00f0 ) >> 4;
-					DumpInstruction( "Skips next instruction if v%02d does not equals v%02d", reg1, reg2 );
-
-					if ( chip8.Cpu.Regs.v[ reg1 ] != chip8.Cpu.Regs.v[ reg2 ] )
-					{
-						chip8.Cpu.Regs.pc += 2;
-					}
-				}
-				break;
-			case 0xa000:
-				{
-					address addr = instruction & 0x0fff;
-					DumpInstruction( "Set i to 0x%x", addr );
-
-					chip8.Cpu.Regs.i = addr;
-				}
-				break;
-			case 0xb000:
-				{
-					address addr = instruction & 0x0fff;
-					DumpInstruction( "Jump to address 0x%x plus v0", addr );
-
-					// Set PC, we do -2 as PC is incremented by two after each instruction.
-					chip8.Cpu.Regs.pc = chip8.Cpu.Regs.v[ 0 ] + addr - 2;
-				}
-				break;
-			case 0xc000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-					int val = instruction & 0x00ff;
-					DumpInstruction( "Set v%02d to random number and %d", reg, val );
-
-					chip8.Cpu.Regs.v[ reg ] = ( rand( ) % 255 ) & val;
-				}
-				break;
-			case 0xd000:
-				{
-					int reg1 = ( instruction & 0x0f00 ) >> 8;
-					int reg2 = ( instruction & 0x00f0 ) >> 4;
-					int val = instruction & 0x000f;
-					DumpInstruction( "Draw sprite at v%02d,v%02d width 8, height %d", reg1, reg2, val );
-
-					if ( api.DrawAt( chip8.Cpu.Regs.v[ reg1 ], chip8.Cpu.Regs.v[ reg2 ], val, &chip8.Memory[ chip8.Cpu.Regs.i ] ) )
-					{
-						chip8.Cpu.Regs.v[ 0xf ] = 1;
-					}
-					else
-					{
-						chip8.Cpu.Regs.v[ 0xf ] = 0;
-					}
-
-					// Each row drawn from address in i register (a bit rows are 8 bits in i register, MSB on left).
-					// If any pixels are turned off from this v[15] is set to 1, otherwise v[15] is set to 0.
-				}
-				break;
-			case 0xe000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-
-					switch ( instruction & 0x00ff )
-					{
-					case 0x9e:
-						DumpInstruction( "Skip next instruction if key stored in v%02d is pressed", reg );
-
-						if ( api.IsKeyDown( chip8.Cpu.Regs.v[ reg ] ) )
-						{
-							chip8.Cpu.Regs.pc += 2;
-						}
-
-						break;
-					case 0xa1:
-						DumpInstruction( "Skip next instruction if key stored in v%02d is not pressed", reg );
-
-						if ( ! api.IsKeyDown( chip8.Cpu.Regs.v[ reg ] ) )
-						{
-							chip8.Cpu.Regs.pc += 2;
-						}
-
-						break;
-
-					default:
-						assert( 0 );
-					}
-				}
-				break;
-			case 0xf000:
-				{
-					int reg = ( instruction & 0x0f00 ) >> 8;
-
-					switch ( instruction & 0x00ff )
-					{
-					case 0x7:
-						DumpInstruction( "Set v%02d to value of the delay timer", reg );
-						chip8.Cpu.Regs.v[ reg ] = chip8.Cpu.Regs.delay;
-						break;
-					case 0xa:
-						DumpInstruction( "Key press awaited and then stored in v%02d", reg );
-						assert( 0 );
-						break;
-					case 0x15:
-						DumpInstruction( "Set delay timer to v%02d", reg );
-						chip8.Cpu.Regs.delay = chip8.Cpu.Regs.v[ reg ];
-						break;
-					case 0x18:
-						DumpInstruction( "Set sound timer to v%02d", reg );
-						chip8.Cpu.Regs.sound = chip8.Cpu.Regs.v[ reg ];
-						break;
-					case 0x1e:
-						DumpInstruction( "Sets i to i + v%02d", reg );
-						chip8.Cpu.Regs.i += chip8.Cpu.Regs.v[ reg ];
-						break;
-					case 0x29:
-						// Characters 0-F (in hexadecimal) are represented by a 4x5 font.
-						DumpInstruction( "Sets i to the location of the sprite for the character in v%02d", reg );
-						chip8.Cpu.Regs.i = chip8.Cpu.Regs.v[ reg ] * 5;
-						break;
-					case 0x33:
-						{
-							// With the most significant of three digits at the address in I, the middle digit at I plus 1, and the least significant digit at I plus 2.
-							// In other words, take the decimal representation of VX, place the hundreds digit in memory at location in I, the tens digit at location I+1, and the ones digit at location I+2.
-							DumpInstruction( "Stores Binary-coded decimal representation of v%02d in i", reg );
-							int hundreds = chip8.Cpu.Regs.v[ reg ] / 100;
-							int tens = ( chip8.Cpu.Regs.v[ reg ] / 10 ) % 10;
-							int units = chip8.Cpu.Regs.v[ reg ] % 10;
-
-							chip8.Memory[ chip8.Cpu.Regs.i + 0 ] = hundreds;
-							chip8.Memory[ chip8.Cpu.Regs.i + 1 ] = tens;
-							chip8.Memory[ chip8.Cpu.Regs.i + 2 ] = units;
-						}
-						break;
-					case 0x55:
-						DumpInstruction( "Stores v0 to v%02d in memory starting at i", reg );
-						for ( int ix = 0; ix < reg + 1; ++ix )
-						{
-							chip8.Memory[ chip8.Cpu.Regs.i + ix ] = chip8.Cpu.Regs.v[ ix ];
-						}
-						break;
-					case 0x65:
-						DumpInstruction( "Fills v0 to v%02d with memory starting at i", reg );
-						for ( int ix = 0; ix < reg + 1; ++ix )
-						{
-							chip8.Cpu.Regs.v[ ix ] = chip8.Memory[ chip8.Cpu.Regs.i + ix ];
-						}
-						break;
-
-					default:
-						assert( 0 );
-					}
-				}
-				break;
-
-			default:
-				assert( 0 );
 			}
 		}
 
@@ -768,7 +947,7 @@ int main( int numArgs, char ** args )
 		lastInstruction = instruction;
 
 		// Jump forward to next instruction.
-		chip8.Cpu.Regs.pc += 2;
+		chip8.Cpu.Regs.pc += 1;
 
 		// Increment instruction counter.
 		instructionsProcessedSinceLastUpdate++;

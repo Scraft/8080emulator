@@ -18,7 +18,7 @@
 #endif
 
 #if defined(_DUMP_DISASSEMBLY)
-#	define DumpDisassembly( _Message, ... )	do { printf( "%04x. "_Message "\n", chip8.Cpu.Regs.pc, __VA_ARGS__ ); } while ( 0 )
+#	define DumpDisassembly( _Message, ... )	do { printf( "%04x. %02x. "_Message "\n", chip8.Cpu.Regs.pc, chip8.Memory[ chip8.Cpu.Regs.pc ], __VA_ARGS__ ); } while ( 0 )
 #else
 #	define DumpDisassembly( _Message, ... ) do { } while ( 0 )
 #endif
@@ -39,8 +39,18 @@ static inline const char * RegName( int ix )
 	return kRegNames[ ix ];
 }
 
+static inline int RegIndex( int ix )
+{
+	assert( ( ix >= 0 && ix < 6 ) || ix == 7 );
+
+	if ( ix == 7 )
+		return ix;
+	else
+		return ix ^ 1;
+}
+
 typedef Uint16 address;
-typedef Uint16 instruction;
+typedef Uint8 instruction;
 
 static const bool ParityTable256[ 256 ] = 
 {
@@ -59,11 +69,12 @@ struct Cpu8080
 	: InterruptsEnabled( true )
 	, EnableInterruptsCountdown( 0 )
 	, DisableInterruptsCountdown( 0 )
-	, VBlankStartInterruptWaiting( false )
-	, VBlankEndInterruptWaiting( false )
+	, NextInterrupt( Interrupt::VBlankStart )
 	{
 		memset( DataBusRead, 0, sizeof( DataBusRead ) );
 		memset( DataBusWrite, 0, sizeof( DataBusWrite ) );
+		InterruptWaiting[ Interrupt::VBlankStart] = false;
+		InterruptWaiting[ Interrupt::VBlankEnd ] = false;
 	}
 
 	struct CommandProcessingUnit
@@ -79,10 +90,16 @@ struct Cpu8080
 				flags.u8 = 0;
 				sp = 0;
 				accumulator = 0;
-				i           = 0;
-				delay       = 0;
-				sound       = 0;
 				pc          = 0x0;
+
+				// Double check...
+				assert( sizeof( Flags ) == 1 );
+				assert( sizeof( __int8 ) == 1 );
+				assert( sizeof( __int16 ) == 2 );
+				assert( sizeof( Sint8 ) == 1 );
+				assert( sizeof( Sint16 ) == 2 );
+				assert( sizeof( Uint8 ) == 1 );
+				assert( sizeof( Uint16 ) == 2 );
 			}
 			// B, C, D, E, H, L (accessible as pairs AB, DE, HL).
 			struct Gpr
@@ -95,7 +112,7 @@ struct Cpu8080
 					E,
 					H,
 					L,
-					___UNUSED,		// Not a register
+					___MEMORY,		// Not a register, 0x6 as a register destination means a memory address
 					___ACCUMULATOR,	// Convenient, as 0x7 as a register destination actually means accumulator
 					Num
 				};
@@ -132,9 +149,9 @@ struct Cpu8080
 
 			union
 			{
-				struct  
+				struct 
 				{
-					unsigned __int8  gpr[ Gpr::Num ];
+					unsigned __int8  gpr[ 6 ];
 					Flags			 flags;
 					unsigned __int8  accumulator;
 				};
@@ -147,9 +164,6 @@ struct Cpu8080
 			};
 
 			unsigned __int16 sp;
-			unsigned __int16 i;
-			unsigned __int8  delay;
-			unsigned __int8  sound;
 			unsigned __int16 pc;
 		};
 
@@ -160,15 +174,25 @@ struct Cpu8080
 
 	Uint8	Memory[ 16 * 1024 ];
 
-	Uint8	DataBusRead[ 3 ];
-	Uint8	DataBusWrite[ 6 ];
+	Uint8	DataBusRead[ 4 ];
+	Uint8	DataBusWrite[ 7 ];
 	bool	InterruptsEnabled;
 	Uint8	EnableInterruptsCountdown;
 	Uint8	DisableInterruptsCountdown;
-	bool	VBlankStartInterruptWaiting;
-	bool	VBlankEndInterruptWaiting;
+	struct Interrupt
+	{
+		enum T
+		{
+			VBlankStart = 0,
+			VBlankEnd,
+			Num
+		};
+	};
+	bool	InterruptWaiting[ Interrupt::Num ];
+	int		NextInterrupt;
 };
 
+static Cpu8080 chip8;
 
 class Api
 {
@@ -185,7 +209,7 @@ public:
 		SDL_Init( SDL_INIT_EVERYTHING );
 
 		//Set up screen
-		m_pScreen = SDL_SetVideoMode( 256, 224, 32, SDL_SWSURFACE );
+		m_pScreen = SDL_SetVideoMode( 224, 256, 32, SDL_SWSURFACE );
 
 		// Draw stuff.
 		if( SDL_MUSTLOCK( m_pScreen ) )
@@ -217,7 +241,36 @@ public:
 
 	void DrawAt( unsigned __int8 x, unsigned __int8 y, uint32_t clr )
 	{
-		m_pPixels[ y * ( m_pScreen->pitch / 4 ) +x ] = clr;
+		int rotatedY = ( 255 - x );
+		int rotatedX = y;
+		if ( clr != 0x0 )
+		{
+			if ( rotatedY < 32 )
+			{
+				clr = 0xffffffff;
+			}
+			else if ( rotatedY < 64 )
+			{
+				clr = 0xff0000ff;
+			}
+			else if ( rotatedY < 184 )
+			{
+				clr = 0xffffffff;
+			}
+			else if ( rotatedY < 240 )
+			{
+				clr = 0xff00ff00;
+			}
+			else if ( rotatedX < 16 || rotatedX > 134 )
+			{
+				clr = 0xffffffff;
+			}
+			else
+			{
+				clr = 0xff00ff00;
+			}
+		}
+		m_pPixels[ rotatedY * ( m_pScreen->pitch / 4 ) + rotatedX ] = clr;
 	}
 
 	void Tick( )
@@ -241,6 +294,8 @@ public:
 		m_pPixels = ( Uint32 * )m_pScreen->pixels;
 
 		// Input.
+		chip8.DataBusRead[ 1 ] = 0;
+
 		SDL_Event e;
 		while ( SDL_PollEvent( &e ) )
 		{
@@ -250,6 +305,36 @@ public:
 				if ( index != 0xff )
 				{
 					m_Keys[ index ] = true;
+				}
+
+				if ( e.key.keysym.sym == SDLK_3 )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 0;
+				}
+
+				if ( e.key.keysym.sym == SDLK_1 )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 2;
+				}
+
+				if ( e.key.keysym.sym == SDLK_2 )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 1;
+				}
+
+				if ( e.key.keysym.sym == SDLK_LCTRL )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 4;
+				}
+
+				if ( e.key.keysym.sym == SDLK_LEFT )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 5;
+				}
+
+				if ( e.key.keysym.sym == SDLK_RIGHT )
+				{
+					chip8.DataBusRead[ 1 ] |= 1 << 6;
 				}
 			}
 			else if ( e.type == SDL_KEYUP )
@@ -445,12 +530,20 @@ bool ReadFileIntoMemory( const char * file, Uint8 * memory, size_t expectedSize 
 	}
 }
 
-Uint16 CheckAddress( Uint16 addr )
+Uint16 CheckAddress( Uint16 addr, bool write = false )
 {
-	assert( addr >= 0 && addr < 32 * 1024 );
+	if ( write )
+		assert( addr >= 0x2000 );
+	
+	assert( addr < 64 * 1024 );
 
-	if ( addr >= 16 * 1024 )
-		addr -= 16 * 1024;
+	while ( addr >= 0x4000 )
+		addr -= 0x2000;
+
+	if ( write )
+		assert( addr >= 0x2000 );
+
+	assert( addr < 64 * 1024 );
 
 	return addr;
 }
@@ -465,22 +558,24 @@ Uint16 CheckProgramCounter( Uint16 addr )
 #define IncrementPc( )						chip8.Cpu.Regs.pc += 1
 #define DoubleIncrementPc( )				chip8.Cpu.Regs.pc += 2
 
-#define GetHlMemory( )						chip8.Memory[ CheckAddress( chip8.Cpu.Regs.gprPair[ Cpu8080::CommandProcessingUnit::Registers::GprPair::HL ] ) ]
-#define SetHlMemory( _Val )					GetHlMemory( ) = _Val
+#define GetHlMemory8( )						chip8.Memory[ CheckAddress( chip8.Cpu.Regs.gprPair[ Cpu8080::CommandProcessingUnit::Registers::GprPair::HL ] ) ]
+#define SetHlMemory8( _Val )				GetHlMemory8( ) = _Val
 
-#define GetRegisterBc( )					chip8.Cpu.Regs.gprPair[ Cpu8080::CommandProcessingUnit::Registers::GprPair::BC ]
+#define GetRegisterBc( )					chip8.Cpu.Regs.gprPair[ CheckAddress( Cpu8080::CommandProcessingUnit::Registers::GprPair::BC ) ]
 #define SetRegisterBc( _Val )				GetRegisterBc( ) = _Val
-#define GetBcMemory8( )						chip8.Memory[ GetRegisterBc( ) ]
+#define GetBcMemory8( )						chip8.Memory[ CheckAddress( GetRegisterBc( ) ) ]
 #define GetBcMemory16( )					( Uint16 &)GetBcMemory8( )
-#define SetBcMemory( _Val )					GetBcMemory16( ) = _Val
+#define SetBcMemory8( _Val )				GetBcMemory8( ) = _Val
+#define SetBcMemory16( _Val )				GetBcMemory16( ) = _Val
 
-#define GetRegisterDe( )					chip8.Cpu.Regs.gprPair[ Cpu8080::CommandProcessingUnit::Registers::GprPair::DE ]
+#define GetRegisterDe( )					chip8.Cpu.Regs.gprPair[ CheckAddress( Cpu8080::CommandProcessingUnit::Registers::GprPair::DE ) ]
 #define SetRegisterDe( _Val )				GetRegisterDe( ) = _Val
-#define GetDeMemory8( )						chip8.Memory[ GetRegisterDe( ) ]
+#define GetDeMemory8( )						chip8.Memory[ CheckAddress( GetRegisterDe( ) ) ]
 #define GetDeMemory16( )					( Uint16 &)GetDeMemory8( )
-#define SetDeMemory( _Val )					GetDeMemory16( ) = _Val
+#define SetDeMemory8( _Val )				GetDeMemory8( ) = _Val
+#define SetDeMemory16( _Val )				GetDeMemory16( ) = _Val
 
-#define GetRegisterHl( )					chip8.Cpu.Regs.gprPair[ Cpu8080::CommandProcessingUnit::Registers::GprPair::HL ]
+#define GetRegisterHl( )					chip8.Cpu.Regs.gprPair[ CheckAddress( Cpu8080::CommandProcessingUnit::Registers::GprPair::HL ) ]
 #define SetRegisterHl( _Val )				GetRegisterHl( ) = _Val
 
 #define GetAccumulator( )					chip8.Cpu.Regs.accumulator
@@ -539,7 +634,6 @@ Uint16 CheckProgramCounter( Uint16 addr )
 			case _GenSrcVariations( _Base + 40 ):	\
 			case _GenSrcVariations( _Base + 56 )
 
-static Cpu8080 chip8;
 
 bool g_InRst = false;
 int g_StartCount = 0;
@@ -567,7 +661,6 @@ int main( int numArgs, char ** args )
 
 	// Instructions processed since last 60hz interval.
 	Uint32 instructionsProcessedSinceLast60Update = 0;
-	Uint32 instructionsProcessedSinceLast120Update = 0;
 
 	// Loop forever.
 	for ( ; ; )
@@ -575,38 +668,27 @@ int main( int numArgs, char ** args )
 		// Get time (in milliseconds).
 		Uint32 timeNow = SDL_GetTicks( );
 
-		if ( instructionsProcessedSinceLast60Update >= 6666 )
+		if ( ( chip8.NextInterrupt == Cpu8080::Interrupt::VBlankEnd && instructionsProcessedSinceLast60Update >= 5705 ) || ( chip8.NextInterrupt == Cpu8080::Interrupt::VBlankStart && instructionsProcessedSinceLast60Update >= 968 ) )
 		{
-			while ( timeNow - last60HzTime <= 1000.f / 60.f )
+			if ( chip8.NextInterrupt == Cpu8080::Interrupt::VBlankEnd )
 			{
-				SDL_Delay( 0 );
-				timeNow = SDL_GetTicks( );
+				while ( timeNow - last60HzTime <= 1000.f / 60.f )
+				{
+					SDL_Delay( 0 );
+					timeNow = SDL_GetTicks( );
+				}
 			}
 
 			// Need to do a VBLANK end interrupt when we can.
-			chip8.VBlankEndInterruptWaiting = true;
+			chip8.InterruptWaiting[ chip8.NextInterrupt ] = true;
+			chip8.NextInterrupt ^= 1;
 
 			instructionsProcessedSinceLast60Update = 0;
-		}
-		else if ( instructionsProcessedSinceLast120Update >= 3333 )
-		{
-			// Need to do a VBLANK start interrupt when we can.
-			chip8.VBlankStartInterruptWaiting = true;
-
-			instructionsProcessedSinceLast120Update = 0;
 		}
 
 		// If it has been 60Hz since our last update...
 		if ( timeNow - last60HzTime > 1000.f / 60.f )
 		{
-			// Decrement delay register.
-			if ( chip8.Cpu.Regs.delay > 0 )
-				chip8.Cpu.Regs.delay--;
-
-			// Decrement sound register.
-			if ( chip8.Cpu.Regs.sound > 0 )
-				chip8.Cpu.Regs.sound--;
-
 			// Update to know when next 60Hz timer should be issued.
 			last60HzTime = timeNow;
 
@@ -622,7 +704,7 @@ int main( int numArgs, char ** args )
 
 					for ( size_t ix = 0; ix < 8; ++ix )
 					{
-						api.DrawAt( x + ix, y, ( ( b >> ( 7 - ix ) ) & 0x1 ) ? 0xffffffff : 0x00000000 );
+						api.DrawAt( x + ix, y, ( ( b >> ix ) & 0x1 ) ? 0xffffffff : 0x00000000 );
 					}
 				}
 			}
@@ -631,10 +713,7 @@ int main( int numArgs, char ** args )
 			api.Tick( );
 		}
 
-		// Play bleeping sound.
-		api.SetSound( chip8.Cpu.Regs.sound > 0 );
-
-		Uint8  instruction = chip8.Memory[ CheckAddress( chip8.Cpu.Regs.pc ) ];
+		Uint8  instruction = chip8.Memory[ CheckProgramCounter( chip8.Cpu.Regs.pc ) ];
 
 		Uint8  s = instruction & 7;
 		Uint8  d = ( instruction >> 3 ) & 7;
@@ -644,34 +723,44 @@ int main( int numArgs, char ** args )
 		// Interrupts.
 		if ( chip8.InterruptsEnabled )
 		{
-			if ( chip8.VBlankStartInterruptWaiting )
+			if ( chip8.InterruptWaiting[ Cpu8080::Interrupt::VBlankStart ] )
 			{
-				chip8.VBlankStartInterruptWaiting = false;
+				chip8.InterruptWaiting[ Cpu8080::Interrupt::VBlankStart ] = false;
 
-				// RST 8.
+				// RST 1.
 				instruction = 0xc7;
 				d = 1;
 
 				g_InRst = true;
 				g_StartCount++;
 
+				chip8.InterruptsEnabled = false;
+
 				// Haven't processed this instruction yet.
 				chip8.Cpu.Regs.pc--;
 			}
-			else if ( chip8.VBlankEndInterruptWaiting )
+			else if ( chip8.InterruptWaiting[ Cpu8080::Interrupt::VBlankEnd ] )
 			{
-				chip8.VBlankEndInterruptWaiting = false;
+				chip8.InterruptWaiting[ Cpu8080::Interrupt::VBlankEnd ] = false;
 
-				// RST $10.
+				// RST 2.
 				instruction = 0xc7;
 				d = 2;
 
 				g_InRst = true;
 				g_EndCount++;
 
+				chip8.InterruptsEnabled = false;
+
 				// Haven't processed this instruction yet.
 				chip8.Cpu.Regs.pc--;
 			}
+		}
+
+		if ( chip8.Cpu.Regs.pc == 0x0682 )
+		{
+			static int a = 5;
+			++a;
 		}
 
 		switch ( instruction )
@@ -690,7 +779,7 @@ int main( int numArgs, char ** args )
 				// Addressing : register
 				DumpDisassembly( "MOV %s, %s", RegName( d ), RegName( s ) );
 				DumpInstruction( "r%d = r%d", d, s );
-				chip8.Cpu.Regs.gpr[ d ] = chip8.Cpu.Regs.gpr[ s ];
+				chip8.Cpu.Regs.gpr[ RegIndex( d ) ] = chip8.Cpu.Regs.gpr[ RegIndex( s ) ];
 			}
 			break;
 
@@ -704,7 +793,7 @@ int main( int numArgs, char ** args )
 				// Addressing : register indirect
 				DumpDisassembly( "MOV M, %s", RegName( s ) );
 				DumpInstruction( "(HL) = r%d", s );
-				SetHlMemory( chip8.Cpu.Regs.gpr[ s ] );
+				SetHlMemory8( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] );
 			}
 			break;
 
@@ -718,21 +807,27 @@ int main( int numArgs, char ** args )
 				// Addressing : register indirect
 				DumpDisassembly( "MOV %s, M", RegName( d ) );
 				DumpInstruction( "r%d = (HL)", d );
-				chip8.Cpu.Regs.gpr[ d ] = GetHlMemory( );
+				chip8.Cpu.Regs.gpr[ RegIndex( d ) ] = GetHlMemory8( );
 			}
 			break;
 
 			// Just destination variations.
 			case _GenDstVariations( 0x6 ):
 			{
-				// Move memory to register.
+				// Move intermediate to register.
 				// Cycles : 2
 				// States : 7
 				// Flags  : none
 				// Addressing : immediate
 				DumpDisassembly( "MVI %s, 0x%x", RegName( d ), immediate );
 				DumpInstruction( "r%d = 0x%x", d, immediate );
-				chip8.Cpu.Regs.gpr[ d ] = GetHlMemory( );
+				chip8.Cpu.Regs.gpr[ RegIndex( d ) ] = immediate;
+
+				if ( chip8.Cpu.Regs.pc == 0x08F1 )
+				{
+					static int a = 5;
+					++a;
+				}
 
 				// Skip over immediate we read into register.
 				IncrementPc( );
@@ -748,7 +843,7 @@ int main( int numArgs, char ** args )
 				// Addressing : immediate
 				DumpDisassembly( "MVI M, 0x%x", immediate );
 				DumpInstruction( "(HL) = 0x%x", immediate );
-				SetHlMemory( immediate );
+				SetHlMemory8( immediate );
 
 				// Next instruction is immediate we just used.
 				IncrementPc( );
@@ -762,7 +857,7 @@ int main( int numArgs, char ** args )
 				// States : 10
 				// Flags  : none
 				// Addressing : immediate
-				DumpDisassembly( "LXI B" );
+				DumpDisassembly( "LXI B, 0x%x", immediate16 );
 				DumpInstruction( "BC = 0x%x", immediate16 );
 				SetRegisterBc( immediate16 );
 
@@ -778,7 +873,7 @@ int main( int numArgs, char ** args )
 				// States : 10
 				// Flags  : none
 				// Addressing : immediate
-				DumpDisassembly( "LXI D" );
+				DumpDisassembly( "LXI D, 0x%x", immediate16 );
 				DumpInstruction( "DE = 0x%x", immediate16 );
 				SetRegisterDe( immediate16 );
 
@@ -794,7 +889,7 @@ int main( int numArgs, char ** args )
 				// States : 10
 				// Flags  : none
 				// Addressing : immediate
-				DumpDisassembly( "LXI H" );
+				DumpDisassembly( "LXI H, 0x%x", immediate16 );
 				DumpInstruction( "HL = 0x%x", immediate16 );
 				SetRegisterHl( immediate16 );
 
@@ -812,7 +907,7 @@ int main( int numArgs, char ** args )
 				// Addressing : register indirect
 				DumpDisassembly( "STAX B" );
 				DumpInstruction( "(BC) = accumulator" );
-				SetBcMemory( GetAccumulator( ) );
+				SetBcMemory8( GetAccumulator( ) );
 			}
 			break;
 
@@ -825,7 +920,7 @@ int main( int numArgs, char ** args )
 				// Addressing : register indirect
 				DumpDisassembly( "STAX D" );
 				DumpInstruction( "(DE) = accumulator" );
-				SetDeMemory( GetAccumulator( ) );
+				SetDeMemory8( GetAccumulator( ) );
 			}
 			break;
 
@@ -844,7 +939,7 @@ int main( int numArgs, char ** args )
 
 			case 0x1a:
 			{
-				// Load accumulator from DE.
+				// Load accumulator from (DE).
 				// Cycles : 2
 				// States : 7
 				// Flags  : none
@@ -932,6 +1027,12 @@ int main( int numArgs, char ** args )
 				Uint16 hl = GetRegisterHl( );
 				SetRegisterDe( hl );
 				SetRegisterHl( de );
+
+				if ( chip8.Cpu.Regs.pc == 0x090A )
+				{
+					static int a = 5;
+					++a;
+				}
 			}
 			break;
 
@@ -1090,7 +1191,7 @@ int main( int numArgs, char ** args )
 				SetRegisterSp( immediate16 );
 
 				// Next two instruction are immediates we just used.
-				DoubleIncrementPc( );
+ 				DoubleIncrementPc( );
 			}
 			break;
 
@@ -1352,6 +1453,12 @@ int main( int numArgs, char ** args )
 
 				// Store next instruction (+3 as next two bytes make up the jump to address).
 				PushAndDecrementStack16( chip8.Cpu.Regs.pc + 3 );
+
+				if ( chip8.Cpu.Regs.pc == 0x08F5 )
+				{
+					static int a = 5;
+					++a;
+				}
 
 				// -1 to take account of the increment at the end of the loop.
 				SetRegisterPc( immediate16 - 1 );
@@ -1799,12 +1906,12 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "INR %s", RegName( d ) );
 				DumpInstruction( "r%d += 1", d );
 
-				chip8.Cpu.Regs.gpr[ d ] += 1;
+				chip8.Cpu.Regs.gpr[ RegIndex( d ) ] += 1;
 
-				GetFlags( ).z = chip8.Cpu.Regs.gpr[ d ] == 0;
-				GetFlags( ).s = chip8.Cpu.Regs.gpr[ d ] >> 7;
-				GetFlags( ).p = ParityTable256[ chip8.Cpu.Regs.gpr[ d ] ];
-				GetFlags( ).ac = ( chip8.Cpu.Regs.gpr[ d ] & 0x1f ) == 0x10;
+				GetFlags( ).z = chip8.Cpu.Regs.gpr[ RegIndex( d ) ] == 0;
+				GetFlags( ).s = chip8.Cpu.Regs.gpr[ RegIndex( d ) ] >> 7;
+				GetFlags( ).p = ParityTable256[ chip8.Cpu.Regs.gpr[ RegIndex( d ) ] ];
+				GetFlags( ).ac = ( chip8.Cpu.Regs.gpr[ RegIndex( d ) ] & 0xf ) == 0x0;
 			}
 			break;
 
@@ -1818,12 +1925,12 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "DCR %s", RegName( d ) );
 				DumpInstruction( "r%d -= 1", d );
 
-				chip8.Cpu.Regs.gpr[ d ] -= 1;
+				chip8.Cpu.Regs.gpr[ RegIndex( d ) ] -= 1;
 
-				GetFlags( ).z = chip8.Cpu.Regs.gpr[ d ] == 0;
-				GetFlags( ).s = chip8.Cpu.Regs.gpr[ d ] >> 7;
-				GetFlags( ).p = ParityTable256[ chip8.Cpu.Regs.gpr[ d ] ];
-				GetFlags( ).ac = ( chip8.Cpu.Regs.gpr[ d ] & 0xf ) == 0xf;
+				GetFlags( ).z = chip8.Cpu.Regs.gpr[ RegIndex( d ) ] == 0;
+				GetFlags( ).s = chip8.Cpu.Regs.gpr[ RegIndex( d ) ] >> 7;
+				GetFlags( ).p = ParityTable256[ chip8.Cpu.Regs.gpr[ RegIndex( d ) ] ];
+				GetFlags( ).ac = ( chip8.Cpu.Regs.gpr[ RegIndex( d ) ] & 0xf ) == 0xf;
 			}
 			break;
 
@@ -1837,14 +1944,14 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "INR M" );
 				DumpInstruction( "(HL) += 1" );
 
-				Uint8 v = GetHlMemory( );
+				Uint8 v = GetHlMemory8( );
 				v += 1;
-				SetHlMemory( v );
+				SetHlMemory8( v );
 
 				GetFlags( ).z = v == 0;
 				GetFlags( ).s = v >> 7;
 				GetFlags( ).p = ParityTable256[ v ];
-				GetFlags( ).ac = ( v & 0x1f ) == 0x10;
+				GetFlags( ).ac = ( v & 0xf ) == 0x0;
 			}
 			break;
 
@@ -1858,9 +1965,9 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "DCR M" );
 				DumpInstruction( "(HL) -= 1" );
 
-				Uint8 v = GetHlMemory( );
+				Uint8 v = GetHlMemory8( );
 				v -= 1;
-				SetHlMemory( v );
+				SetHlMemory8( v );
 
 				GetFlags( ).z = v == 0;
 				GetFlags( ).s = v >> 7;
@@ -1967,10 +2074,10 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator += r%d", s );
 
 				// Result (as 16 bit to detect carry).
-				Uint16 r  = chip8.Cpu.Regs.accumulator + chip8.Cpu.Regs.gpr[ s ];
+				Uint16 r  = chip8.Cpu.Regs.accumulator + chip8.Cpu.Regs.gpr[ RegIndex( s ) ];
 
 				// Result of adding lower nibbles together (to detect auxiliary carry).
-				Uint8 nr = ( chip8.Cpu.Regs.accumulator & 0xf ) + ( chip8.Cpu.Regs.gpr[ s ] & 0xf );
+				Uint8 nr = ( chip8.Cpu.Regs.accumulator & 0xf ) + ( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] & 0xf );
 
 				// Truncate Uint16 to Uint8, we handle flags after.
 				chip8.Cpu.Regs.accumulator = ( Uint8 )r;
@@ -1994,10 +2101,10 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator += r%d + carry", s );
 
 				// Result (as 16 bit to detect carry).
-				Uint16 r  = chip8.Cpu.Regs.accumulator + chip8.Cpu.Regs.gpr[ s ] + GetFlags( ).cy;
+				Uint16 r  = chip8.Cpu.Regs.accumulator + chip8.Cpu.Regs.gpr[ RegIndex( s ) ] + GetFlags( ).cy;
 
 				// Result of adding lower nibbles together (to detect auxiliary carry).
-				Uint8 nr = ( chip8.Cpu.Regs.accumulator & 0xf ) + ( chip8.Cpu.Regs.gpr[ s ] & 0xf ) + GetFlags( ).cy;
+				Uint8 nr = ( chip8.Cpu.Regs.accumulator & 0xf ) + ( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] & 0xf ) + GetFlags( ).cy;
 
 				// Truncate Uint16 to Uint8, we handle flags after.
 				chip8.Cpu.Regs.accumulator = ( Uint8 )r;
@@ -2021,10 +2128,10 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator += (HL)" );
 
 				// Result (as 16 bit to detect carry).
-				Uint16 r  = GetAccumulator( ) + GetHlMemory( );
+				Uint16 r  = GetAccumulator( ) + GetHlMemory8( );
 
 				// Result of adding lower nibbles together (to detect auxiliary carry).
-				Uint8 nr = ( GetAccumulator( ) & 0xf ) + ( GetHlMemory( ) & 0xf );
+				Uint8 nr = ( GetAccumulator( ) & 0xf ) + ( GetHlMemory8( ) & 0xf );
 
 				// Truncate Uint16 to Uint8, we handle flags after.
 				SetAccumulator( ( Uint8 )r );
@@ -2048,10 +2155,10 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator += (HL) + carry" );
 
 				// Result (as 16 bit to detect carry).
-				Uint16 r  = GetAccumulator( ) + GetHlMemory( ) + GetFlags( ).cy;
+				Uint16 r  = GetAccumulator( ) + GetHlMemory8( ) + GetFlags( ).cy;
 
 				// Result of adding lower nibbles together (to detect auxiliary carry).
-				Uint8 nr = ( GetAccumulator( ) & 0xf ) + ( GetHlMemory( ) & 0xf ) + GetFlags( ).cy;
+				Uint8 nr = ( GetAccumulator( ) & 0xf ) + ( GetHlMemory8( ) & 0xf ) + GetFlags( ).cy;
 
 				// Truncate Uint16 to Uint8, we handle flags after.
 				SetAccumulator( ( Uint8 )r );
@@ -2218,13 +2325,13 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator -= r%d", s );
 
 				// Result (as signed 16 bit to detect carry).
-				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )chip8.Cpu.Regs.gpr[ s ];
+				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )chip8.Cpu.Regs.gpr[ RegIndex( s ) ];
 
 				// Result of subtracting lower nibbles from each other (to detect auxiliary carry).
-				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( chip8.Cpu.Regs.gpr[ s ] & 0xf );
+				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] & 0xf );
 
 				// Handle borrow after.
-				SetAccumulator( GetAccumulator( ) - chip8.Cpu.Regs.gpr[ s ] );
+				SetAccumulator( GetAccumulator( ) - chip8.Cpu.Regs.gpr[ RegIndex( s ) ] );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2245,13 +2352,13 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator -= (r%d + borrow)", s );
 
 				// Result (as signed 16 bit to detect carry).
-				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )chip8.Cpu.Regs.gpr[ s ] - ( Sint16 )GetFlags( ).cy;
+				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )chip8.Cpu.Regs.gpr[ RegIndex( s ) ] - ( Sint16 )GetFlags( ).cy;
 
 				// Result of subtracting lower nibbles from each other (to detect auxiliary carry).
-				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( chip8.Cpu.Regs.gpr[ s ] & 0xf ) - GetFlags( ).cy;
+				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] & 0xf ) - GetFlags( ).cy;
 
 				// Handle borrow after.
-				SetAccumulator( GetAccumulator( ) - chip8.Cpu.Regs.gpr[ s ] - GetFlags( ).cy );
+				SetAccumulator( GetAccumulator( ) - chip8.Cpu.Regs.gpr[ RegIndex( s ) ] - GetFlags( ).cy );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2272,13 +2379,13 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator -= (HL)" );
 
 				// Result (as signed 16 bit to detect carry).
-				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )GetHlMemory( );
+				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )GetHlMemory8( );
 
 				// Result of subtracting lower nibbles from each other (to detect auxiliary carry).
-				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( GetHlMemory( ) & 0xf );
+				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( GetHlMemory8( ) & 0xf );
 
 				// Handle borrow after.
-				SetAccumulator( GetAccumulator( ) - GetHlMemory( ) );
+				SetAccumulator( GetAccumulator( ) - GetHlMemory8( ) );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2299,13 +2406,13 @@ int main( int numArgs, char ** args )
 				DumpInstruction( "accumulator -= ( (HL) + borrow )" );
 
 				// Result (as signed 16 bit to detect carry).
-				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )GetHlMemory( ) - GetFlags( ).cy;
+				Sint16 r  = ( Sint16 )GetAccumulator( ) - ( Sint16 )GetHlMemory8( ) - GetFlags( ).cy;
 
 				// Result of subtracting lower nibbles from each other (to detect auxiliary carry).
-				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( GetHlMemory( ) & 0xf ) - GetFlags( ).cy;
+				Sint16 nr = ( Sint16 )( GetAccumulator( ) & 0xf ) - ( Sint16 )( GetHlMemory8( ) & 0xf ) - GetFlags( ).cy;
 
 				// Handle borrow after.
-				SetAccumulator( GetAccumulator( ) - GetHlMemory( ) - GetFlags( ).cy );
+				SetAccumulator( GetAccumulator( ) - GetHlMemory8( ) - GetFlags( ).cy );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2388,7 +2495,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "ANA %s", RegName( s ) );
 				DumpInstruction( "accumulator &= r%d", s );
 
-				SetAccumulator( GetAccumulator( ) & chip8.Cpu.Regs.gpr[ s ] );
+				SetAccumulator( GetAccumulator( ) & chip8.Cpu.Regs.gpr[ RegIndex( s ) ] );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2408,7 +2515,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "XRA %s", RegName( s ) );
 				DumpInstruction( "accumulator ^= r%d", s );
 
-				SetAccumulator( GetAccumulator( ) ^ chip8.Cpu.Regs.gpr[ s ] );
+				SetAccumulator( GetAccumulator( ) ^ chip8.Cpu.Regs.gpr[ RegIndex( s ) ] );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2428,7 +2535,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "ORA %s", RegName( s ) );
 				DumpInstruction( "accumulator |= r%d", s );
 
-				SetAccumulator( GetAccumulator( ) | chip8.Cpu.Regs.gpr[ s ] );
+				SetAccumulator( GetAccumulator( ) | chip8.Cpu.Regs.gpr[ RegIndex( s ) ] );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2448,13 +2555,13 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "CMP %s", RegName( s ) );
 				DumpInstruction( "tempReg = accumulator - r%d", s );
 
-				Uint8 r = GetAccumulator( ) - chip8.Cpu.Regs.gpr[ s ];
+				Uint8 r = GetAccumulator( ) - chip8.Cpu.Regs.gpr[ RegIndex( s ) ];
 
 				GetFlags( ).z = r == 0;
 				GetFlags( ).s = r >> 7;
 				GetFlags( ).p = ParityTable256[ r ];
-				GetFlags( ).cy = GetAccumulator( ) < chip8.Cpu.Regs.gpr[ s ] ? 1 : 0;
-				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( chip8.Cpu.Regs.gpr[ s ] & 0xf );
+				GetFlags( ).cy = GetAccumulator( ) < chip8.Cpu.Regs.gpr[ RegIndex( s ) ] ? 1 : 0;
+				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( chip8.Cpu.Regs.gpr[ RegIndex( s ) ] & 0xf );
 			}
 			break;
 
@@ -2468,7 +2575,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "ANA M" );
 				DumpInstruction( "accumulator &= (HL)" );
 
-				SetAccumulator( GetAccumulator( ) & GetHlMemory( ) );
+				SetAccumulator( GetAccumulator( ) & GetHlMemory8( ) );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2488,7 +2595,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "XRA M" );
 				DumpInstruction( "accumulator ^= (HL)" );
 
-				SetAccumulator( GetAccumulator( ) ^ GetHlMemory( ) );
+				SetAccumulator( GetAccumulator( ) ^ GetHlMemory8( ) );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2508,7 +2615,7 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "ORA M" );
 				DumpInstruction( "accumulator |= (HL)" );
 
-				SetAccumulator( GetAccumulator( ) | GetHlMemory( ) );
+				SetAccumulator( GetAccumulator( ) | GetHlMemory8( ) );
 
 				GetFlags( ).z = GetAccumulator( ) == 0;
 				GetFlags( ).s = GetAccumulator( ) >> 7;
@@ -2528,13 +2635,13 @@ int main( int numArgs, char ** args )
 				DumpDisassembly( "CMP M" );
 				DumpInstruction( "tempReg = accumulator - (HL)" );
 
-				Uint8 r = GetAccumulator( ) - GetHlMemory( );
+				Uint8 r = GetAccumulator( ) - GetHlMemory8( );
 
 				GetFlags( ).z = r == 0;
 				GetFlags( ).s = r >> 7;
 				GetFlags( ).p = ParityTable256[ r ];
-				GetFlags( ).cy = GetAccumulator( ) < GetHlMemory( ) ? 1 : 0;
-				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( GetHlMemory( ) & 0xf );
+				GetFlags( ).cy = GetAccumulator( ) < GetHlMemory8( ) ? 1 : 0;
+				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( GetHlMemory8( ) & 0xf );
 			}
 			break;
 
@@ -2623,7 +2730,7 @@ int main( int numArgs, char ** args )
 				GetFlags( ).s = r >> 7;
 				GetFlags( ).p = ParityTable256[ r ];
 				GetFlags( ).cy = GetAccumulator( ) < immediate ? 1 : 0;
-				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( immediate & 0xf );
+				GetFlags( ).ac = ( GetAccumulator( ) & 0xf ) < ( immediate & 0xf ) ? 1 : 0;
 
 				// Skip over immediate we used this operation.
 				IncrementPc( );
@@ -2819,6 +2926,21 @@ int main( int numArgs, char ** args )
 
 				chip8.DataBusWrite[ immediate ] = GetAccumulator( );
 
+				if ( immediate == 6 )
+				{
+					if ( GetAccumulator( ) < 32 )
+					{
+#if 0
+						if ( 'A' + GetAccumulator( ) == 'A' )
+						{
+							static int a = 5;
+							++a;
+						}
+						printf( "%c\n", 'A' + GetAccumulator( ) );
+#endif
+					}
+				}
+
 				// Skip over immediate we used this operation.
 				IncrementPc( );
 			}
@@ -2859,7 +2981,7 @@ int main( int numArgs, char ** args )
 
 			case 0x0:
 			{
-				// Disable interrupts.
+				// No operation.
 				// Cycles : 1
 				// States : 4
 				// Flags  : none
@@ -2871,13 +2993,14 @@ int main( int numArgs, char ** args )
 
 			case 0x76:
 			{
-				// Disable interrupts.
+				// Halt.
 				// Cycles : 1
 				// States : 7
 				// Flags  : none
 				// Addressing : -
 				DumpDisassembly( "HLT" );
 				DumpInstruction( "No operation" );
+				assert( 0 );
 			}
 			break;
 
@@ -2897,7 +3020,6 @@ int main( int numArgs, char ** args )
 
 		// Increment instruction counter.
 		instructionsProcessedSinceLast60Update++;
-		instructionsProcessedSinceLast120Update++;
 
 		// Handle interrupt enable/disable.
 		if ( chip8.EnableInterruptsCountdown )
